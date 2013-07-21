@@ -244,6 +244,7 @@ add_unclipped CropTop {cropped_image, top_skip} = do
     add_maybe_clipped cropped_image
 
 -- TODO: prove this cannot be called in an out of bounds case.
+-- obviously true for start_image_build, but for the others?
 add_maybe_clipped :: forall s . Image -> BlitM s ()
 add_maybe_clipped EmptyImage = return ()
 add_maybe_clipped (HorizText a text_str ow _cw) = do
@@ -260,17 +261,29 @@ add_maybe_clipped (HorizText a text_str ow _cw) = do
                  in add_unclipped_text text_str'
             else add_unclipped_text text_str
 add_maybe_clipped (VertJoin top_image bottom_image _ow oh) = do
-    add_maybe_clipped_join "vert_join" skip_rows remaining_rows row_offset
+    add_maybe_clipped_join "vert_join" 
+                           skip_rows remaining_rows row_offset
+                           skip_columns remaining_columns column_offset
                            (image_height top_image)
+                           (image_width top_image)
                            top_image
+                           (image_height bottom_image)
+                           (image_width bottom_image)
                            bottom_image
                            oh
+                           ow
 add_maybe_clipped (HorizJoin left_image right_image ow _oh) = do
-    add_maybe_clipped_join "horiz_join" skip_columns remaining_columns column_offset
+    add_maybe_clipped_join "horiz_join"
+                           skip_columns remaining_columns column_offset
+                           skip_rows remaining_rows row_offset
                            (image_width left_image)
+                           (image_height left_image)
                            left_image
+                           (image_width right_image)
+                           (image_height right_image)
                            right_image
                            ow
+                           oh
 add_maybe_clipped BGFill {output_width, output_height} = do
     s <- get
     let output_width'  = min (output_width  - s^.skip_columns) (s^.remaining_columns)
@@ -290,35 +303,91 @@ add_maybe_clipped CropTop {cropped_image, top_skip} = do
     add_maybe_clipped cropped_image
 
 add_maybe_clipped_join :: forall s . String 
+                       -- major dim lenses
                        -> Lens BlitState BlitState Int Int
                        -> Lens BlitState BlitState Int Int
                        -> Lens BlitState BlitState Int Int
+                       -- minor dim lenses
+                       -> Lens BlitState BlitState Int Int
+                       -> Lens BlitState BlitState Int Int
+                       -> Lens BlitState BlitState Int Int
+                       -- major dim of image 0
                        -> Int
+                       -- minor dim of image 0
+                       -> Int
+                       -- image 0
                        -> Image
+                       -- major dim of image 1
+                       -> Int
+                       -- minor dim of image 1
+                       -> Int
+                       -- image 1
                        -> Image
+                       -- full size in major dim
+                       -> Int
+                       -- full size in minor dim
                        -> Int
                        -> BlitM s ()
-add_maybe_clipped_join name skip remaining offset i0_dim i0 i1 size = do
+add_maybe_clipped_join name
+                       major_skip major_remaining major_offset
+                       minor_skip minor_remaining minor_offset
+                       i0_major i0_minor i0
+                       i1_major i0_minor i1
+                       major_size minor_size = do
     state <- get
-    when (state^.remaining == 0) $ fail $ name ++ " with remaining == 0"
-    case state^.skip of
+    when (state^.major_remaining == 0) $ fail $ name ++ " with remaining == 0"
+    let check_minor_and_add = check_dim_and_add minor_skip minor_remaining minor_offset minor_size 
+    case state^.major_skip of
         s | s >= size -> fail $ name ++ " on fully clipped"
-          -- TODO: check if clipped in other dim. if not use add_unclipped
-          | s == 0    -> case state^.remaining of
-                r | r > i0_dim -> do
-                        add_maybe_clipped i0
-                        put $ state & offset +~ i0_dim & remaining -~ i0_dim
-                        add_maybe_clipped i1
-                  | otherwise  -> add_maybe_clipped i0
-          | s >= i0_dim -> do
-                put $ state & skip -~ i0_dim
-                add_maybe_clipped i1
-          | otherwise  -> case i0_dim - s of
-                i0_dim' | state^.remaining <= i0_dim' -> add_maybe_clipped i0
-                        | otherwise                   -> do
-                            add_maybe_clipped i0
-                            put $ state & offset +~ i0_dim' & remaining -~ i0_dim'
+          | s == 0    -> case state^.major_remaining of
+                r | r > i0_major -> do
+                        check_minor_and_add i0 i0_minor
+                        put $ state & major_offset +~ i0_major & major_remaining -~ i0_major
+                        if r >= major_size then
+                            check_minor_and_add i1 i1_minor
+                        else
                             add_maybe_clipped i1
+                  | r == i0_major -> check_minor_and_add i0 i0_minor
+                  | r <  i0_major -> add_maybe_clipped i0
+                  | otherwise   -> fail "undefined remaining"
+          | s == i0_major -> do
+                put $ state & major_skip -~ i0_major
+                if state^.major_remaining >= i1_major
+                    then check_minor_and_add i1 i1_minor
+                    else add_maybe_clipped i1
+          | s >= i0_major -> do
+                put $ state & major_skip -~ i0_major
+                add_maybe_clipped i1
+          -- s < i0_dim && > 0
+          | otherwise  -> case i0_major - s of
+                i0_major' | state^.major_remaining <= i0_major' -> add_maybe_clipped i0
+                          | otherwise                   -> do
+                                add_maybe_clipped i0
+                                put $ state & major_offset +~ i0_major' & major_remaining -~ i0_major'
+                                if state^.major_remaining - i0_major' >= i1_major
+                                    then check_minor_and_add i1 i1_minor
+                                    else add_maybe_clipped i1
+
+
+check_dim_and_add :: forall s .
+                  -- dim lenses
+                     Lens BlitState BlitState Int Int
+                  -> Lens BlitState BlitState Int Int
+                  -> Lens BlitState BlitState Int Int
+                  -- full size in dim
+                  -> Int
+                  -> Image
+                  -- size of image in dim
+                  -> Int
+                  -> BlitM s ()
+check_dim_and_add skip remaining offset size i i_size = do
+    state <- get
+    case state^.skip of
+        s | s == 0 -> case state^.remaining of
+                r | r >= i_size -> add_unclipped i
+                  | otherwise   -> add_maybe_clipped i
+          | s  < i_size -> add_maybe_clipped i
+          | s >= i_size -> return ()
 
 -- TODO: store a skip list in HorizText(?)
 -- TODO: represent display strings containing chars that are not 1 column chars as a separate
