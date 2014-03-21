@@ -1,5 +1,5 @@
 name:                vty
-version:             4.7.3
+version:             4.7.4
 license:             BSD3
 license-file:        LICENSE
 author:              AUTHORS
@@ -64,6 +64,8 @@ library
   other-modules:       Data.Marshalling
                        Data.Terminfo.Parse
                        Data.Terminfo.Eval
+                       Graphics.Vty.Attributes.Color
+                       Graphics.Vty.Attributes.Color240
                        Graphics.Vty.DisplayAttributes
                        Graphics.Vty.Span
                        Graphics.Vty.Terminal.Generic
