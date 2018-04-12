@@ -1,4 +1,5 @@
 #include <sys/ioctl.h>
+#include <termios.h>
 
 unsigned long vty_c_get_window_size(int fd) {
 	struct winsize w;
